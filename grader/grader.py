@@ -1,17 +1,14 @@
-"""
-grader/grader.py
-----------------
-Evaluates all three tasks of the email-analysis agent in one OpenAI call.
-"""
-
 import re
 import os
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
+# Load environment variables (looks for GEMINI_API_KEY)
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize the Gemini Client
+client = genai.Client()
 
 # Weights for the three tasks
 WEIGHTS = {"task1": 0.50, "task2": 0.30, "task3": 0.20}
@@ -66,28 +63,31 @@ def _safe_float(text: str, default: float = 0.0) -> float:
 
 def grade_response(email: str, agent_result: dict) -> dict:
     """
-    Grades all three tasks in a single OpenAI call.
+    Grades all three tasks in a single Gemini call.
     """
 
     user_message = (
         f"EMAIL:\n{email}\n\n"
-        f"TASK 1 - Spam Status: {agent_result['spam_status']}\n"
-        f"Justification: {agent_result['spam_justification']}\n\n"
-        f"TASK 2 - Category: {agent_result['category']}\n"
-        f"Justification: {agent_result['category_justification']}\n\n"
-        f"TASK 3 - Priority: {agent_result['priority']}\n"
-        f"Justification: {agent_result['priority_justification']}"
+        f"TASK 1 - Spam Status: {agent_result.get('spam_status', '')}\n"
+        f"Justification: {agent_result.get('spam_justification', '')}\n\n"
+        f"TASK 2 - Category: {agent_result.get('category', '')}\n"
+        f"Justification: {agent_result.get('category_justification', '')}\n\n"
+        f"TASK 3 - Priority: {agent_result.get('priority', '')}\n"
+        f"Justification: {agent_result.get('priority_justification', '')}"
     )
 
-    response = client.responses.create(
-        model="gpt-4.1-mini",  # fast + cheap, ideal for grading
-        input=[
-            {"role": "system", "content": GRADER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
+    # Call the Gemini API
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=user_message,
+        config=types.GenerateContentConfig(
+            system_instruction=GRADER_SYSTEM_PROMPT,
+            temperature=0.0 # Set to 0.0 to ensure strict, deterministic grading formats
+        )
     )
 
-    raw = response.output_text.strip()
+    # Extract text from the Gemini response
+    raw = response.text.strip()
 
     grades = {
         "task1_grade": 0.0,
@@ -146,11 +146,19 @@ def grade_label(grade: float) -> str:
 
 # --- Optional: Local Testing ---
 if __name__ == "__main__":
-    from agent.geminiai_agent import get_email_analysis
-
+    # Mocking the agent result for standalone testing
+    # In reality, this comes from agent.geminiai_agent.get_email_analysis
     email = "Hi team, please review the Q3 report and approve by EOD Friday. Urgent."
-    agent_result = get_email_analysis(email)
-    grade_result = grade_response(email, agent_result)
+    mock_agent_result = {
+        "spam_status": "Not Spam",
+        "spam_justification": "It is an internal team request about Q3 reports.",
+        "category": "Work",
+        "category_justification": "Discusses reports and approvals.",
+        "priority": "High",
+        "priority_justification": "Mentions EOD Friday and is marked Urgent."
+    }
+    
+    grade_result = grade_response(email, mock_agent_result)
 
     print(f"Task 1  : {grade_result['task1_grade']:.2f}  — {grade_result['task1_explanation']}")
     print(f"Task 2  : {grade_result['task2_grade']:.2f}  — {grade_result['task2_explanation']}")
