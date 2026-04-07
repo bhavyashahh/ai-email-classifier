@@ -1,5 +1,5 @@
 from env.environment import EmailEnv
-from env.grader import grade
+from grader.grader import grade
 from agent.geminiai_agent import get_action
 
 def run():
