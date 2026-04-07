@@ -1,73 +1,91 @@
 """
 main.py
 -------
-Interactive email spam classifier with a built-in grader.
+Interactive email analysis system with a 3-task grader.
 
-Workflow:
-  1. User types an email in the terminal.
-  2. The AI agent classifies it (spam / not spam) and gives a reasoning.
-  3. The Grader evaluates the AI's response and assigns a grade (0 – 1).
-  4. Everything is printed in a clear, formatted summary.
+Workflow per iteration:
+  1. User types email content.
+  2. AI agent returns: spam verdict, category, priority — each with justification.
+  3. Grader evaluates all three tasks and returns per-task grades + weighted overall.
+  4. A clean terminal report is printed.
 """
 
-from agent.geminiai_agent import get_action
+from agent.geminiai_agent import get_email_analysis
 from grader.grader import grade_response, grade_label
 
+SEP  = "─" * 62
+SEP2 = "· · " * 15
 
-SEPARATOR = "─" * 60
+
+def bar(grade: float, width: int = 20) -> str:
+    """Renders a simple ASCII progress bar for a grade."""
+    filled = round(grade * width)
+    return "[" + "█" * filled + "░" * (width - filled) + f"]  {grade:.2f}"
 
 
-def print_result(email: str, agent_result: dict, grade_result: dict) -> None:
-    """Pretty-prints the full pipeline output."""
-    grade = grade_result["grade"]
-    label = grade_label(grade)
+def print_report(email: str, agent: dict, grade: dict) -> None:
+    overall = grade["overall_grade"]
+    label   = grade_label(overall)
 
-    print(f"\n{SEPARATOR}")
-    print("  AI CLASSIFICATION REPORT")
-    print(SEPARATOR)
-    print(f"  Verdict   : {agent_result['verdict'].upper()}")
-    print(f"  Reasoning : {agent_result['reasoning']}")
-    print(SEPARATOR)
-    print("  GRADER EVALUATION")
-    print(SEPARATOR)
-    print(f"  Grade     : {grade:.2f} / 1.00  [{label}]")
-    print(f"  Feedback  : {grade_result['explanation']}")
-    print(SEPARATOR)
+    print(f"\n{SEP}")
+    print("  AI ANALYSIS REPORT")
+    print(SEP)
+
+    # Task 1
+    print(f"  Task 1 — Spam status   : {agent['spam_status']}")
+    print(f"  Justification          : {agent['spam_justification']}")
+    print(f"  Grade                  : {bar(grade['task1_grade'])}  (weight 50%)")
+    print(f"  Grader note            : {grade['task1_explanation']}")
+    print()
+
+    # Task 2
+    print(f"  Task 2 — Category      : {agent['category']}")
+    print(f"  Justification          : {agent['category_justification']}")
+    print(f"  Grade                  : {bar(grade['task2_grade'])}  (weight 30%)")
+    print(f"  Grader note            : {grade['task2_explanation']}")
+    print()
+
+    # Task 3
+    print(f"  Task 3 — Priority      : {agent['priority']}")
+    print(f"  Justification          : {agent['priority_justification']}")
+    print(f"  Grade                  : {bar(grade['task3_grade'])}  (weight 20%)")
+    print(f"  Grader note            : {grade['task3_explanation']}")
+
+    # Overall
+    print(f"\n{SEP}")
+    print(f"  OVERALL GRADE          : {bar(overall, 30)}  [{label}]")
+    print(f"  Formula                : 0.50×T1 + 0.30×T2 + 0.20×T3")
+    print(SEP)
 
 
 def run_interactive() -> None:
-    print("\nWelcome to the AI Email Classifier with Grader!")
+    print("\nWelcome to the AI Email Analyser with Grader!")
     print("Type 'exit' or 'quit' to stop.\n")
 
     while True:
-        # ── 1. Take input ──────────────────────────────────────────────
-        print(SEPARATOR)
-        user_email = input("Enter email content:\n> ").strip()
+        print(SEP)
+        raw_input = input("Paste email content:\n> ").strip()
 
-        if not user_email:
-            print("  (empty input — please type something)\n")
+        if not raw_input:
+            print("  (empty — please type something)\n")
             continue
 
-        if user_email.lower() in {"exit", "quit"}:
+        if raw_input.lower() in {"exit", "quit"}:
             print("\nGoodbye!")
             break
 
-        # ── 2. AI Agent classifies ─────────────────────────────────────
-        print("\n[Agent thinking...] ", end="", flush=True)
-        agent_result = get_action(user_email)
+        # ── Agent ──────────────────────────────────────────────────────
+        print("\n[Agent analysing...] ", end="", flush=True)
+        agent_result = get_email_analysis(raw_input)
         print("done.")
 
-        # ── 3. Grader evaluates ────────────────────────────────────────
+        # ── Grader ─────────────────────────────────────────────────────
         print("[Grader evaluating...] ", end="", flush=True)
-        grade_result = grade_response(
-            email=user_email,
-            verdict=agent_result["verdict"],
-            reasoning=agent_result["reasoning"],
-        )
+        grade_result = grade_response(raw_input, agent_result)
         print("done.")
 
-        # ── 4. Print full summary ──────────────────────────────────────
-        print_result(user_email, agent_result, grade_result)
+        # ── Report ─────────────────────────────────────────────────────
+        print_report(raw_input, agent_result, grade_result)
         print()
 
 

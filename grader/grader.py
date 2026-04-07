@@ -1,120 +1,144 @@
 """
 grader/grader.py
 ----------------
-Evaluates the AI agent's spam-classification response and returns a grade
-between 0 and 1, plus a short explanation of the grade.
-
-Grading rubric (sent to the grader LLM):
-  1.0  – Correct, confident verdict backed by specific, accurate signals.
-  0.7–0.9 – Correct verdict, but reasoning is somewhat vague or misses
-             key signals while still being partially correct.
-  0.4–0.6 – Verdict seems plausible but reasoning is weak, circular,
-             or internally inconsistent.
-  0.1–0.3 – Verdict is questionable or reasoning contradicts the verdict.
-  0.0  – Verdict is clearly wrong OR reasoning is completely absent /
-          nonsensical.
+Evaluates all three tasks of the email-analysis agent in one OpenAI call.
 """
 
 import re
-from google import genai
-from google.genai import types
+import os
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = genai.Client()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-GRADER_SYSTEM_PROMPT = """You are an expert grader evaluating an AI spam-classifier's response.
+# Weights for the three tasks
+WEIGHTS = {"task1": 0.50, "task2": 0.30, "task3": 0.20}
 
-You will receive:
-  EMAIL: the original email the AI was shown
-  VERDICT: what the AI decided (spam or not spam)
-  REASONING: the AI's justification
+GRADER_SYSTEM_PROMPT = """You are an expert grader evaluating an AI email-analysis agent's response.
 
-Your job is to grade the AI's response on a scale from 0 to 1 using this rubric:
+You will receive the original email and the AI's answers for three tasks, each with a justification.
 
-  1.0  — Verdict is correct AND reasoning cites specific, accurate signals
-           (e.g. suspicious links, urgency language, prize claims, sender mismatch).
-  0.7–0.9 — Correct verdict but reasoning is vague, generic, or misses
-              important signals.
-  0.4–0.6 — Verdict is plausible but reasoning is weak, circular, or
-              partially contradicts the verdict.
-  0.1–0.3 — Verdict is likely wrong OR reasoning seriously contradicts it.
-  0.0  — Verdict is clearly wrong OR reasoning is absent / incoherent.
+Grade each task on a scale from 0 to 1 using these rubrics:
 
-Respond in EXACTLY this format (no extra text):
+TASK 1 — Spam Detection:
+  1.0  Correct verdict AND justification cites specific signals (urgency language,
+       prize claims, suspicious links, sender mismatch, unsubscribe pressure, etc.)
+  0.7–0.9  Correct verdict but reasoning is vague or generic.
+  0.4–0.6  Plausible verdict; reasoning weak or partially inconsistent.
+  0.1–0.3  Likely wrong verdict OR reasoning contradicts it.
+  0.0  Clearly wrong OR reasoning absent/incoherent.
 
-GRADE: <a number between 0 and 1, e.g. 0.75>
-EXPLANATION: <one or two sentences explaining why you gave this grade>"""
+TASK 2 — Category (Work / Personal / Promotions / Updates / Finance):
+  1.0  Best-fitting category with clear, specific reasoning.
+  0.7–0.9  Correct but reasoning is thin.
+  0.4–0.6  Borderline choice; reasoning debatable.
+  0.1–0.3  Poor fit; reasoning unsound.
+  0.0  Completely wrong OR no reasoning.
+
+TASK 3 — Priority (High / Medium / Low):
+  1.0  Most appropriate level with clear reasoning tied to urgency/importance.
+  0.7–0.9  Reasonable but reasoning could be sharper.
+  0.4–0.6  Debatable; partially justified.
+  0.1–0.3  Likely wrong; reasoning contradicts the chosen level.
+  0.0  Clearly wrong OR absent/incoherent.
+
+Respond in EXACTLY this format (no extra text, no markdown):
+
+TASK1_GRADE: <number 0–1>
+TASK1_EXPLANATION: <one sentence>
+
+TASK2_GRADE: <number 0–1>
+TASK2_EXPLANATION: <one sentence>
+
+TASK3_GRADE: <number 0–1>
+TASK3_EXPLANATION: <one sentence>"""
 
 
-def grade_response(email: str, verdict: str, reasoning: str) -> dict:
+def _safe_float(text: str, default: float = 0.0) -> float:
+    """Extract the first float from a string and clamp to [0, 1]."""
+    match = re.search(r"\d+\.?\d*", text)
+    if match:
+        return max(0.0, min(1.0, float(match.group())))
+    return default
+
+
+def grade_response(email: str, agent_result: dict) -> dict:
     """
-    Grades the AI agent's classification response.
-
-    Args:
-        email    : the original email content
-        verdict  : the agent's verdict ("spam" / "not spam")
-        reasoning: the agent's reasoning string
-
-    Returns a dict with:
-        - grade      : float between 0.0 and 1.0
-        - explanation: short string explaining the grade
-        - raw        : raw grader response (for debugging)
+    Grades all three tasks in a single OpenAI call.
     """
+
     user_message = (
         f"EMAIL:\n{email}\n\n"
-        f"VERDICT: {verdict}\n\n"
-        f"REASONING: {reasoning}"
+        f"TASK 1 - Spam Status: {agent_result['spam_status']}\n"
+        f"Justification: {agent_result['spam_justification']}\n\n"
+        f"TASK 2 - Category: {agent_result['category']}\n"
+        f"Justification: {agent_result['category_justification']}\n\n"
+        f"TASK 3 - Priority: {agent_result['priority']}\n"
+        f"Justification: {agent_result['priority_justification']}"
     )
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=user_message,
-        config=types.GenerateContentConfig(
-            system_instruction=GRADER_SYSTEM_PROMPT
-        ),
+    response = client.responses.create(
+        model="gpt-4.1-mini",  # fast + cheap, ideal for grading
+        input=[
+            {"role": "system", "content": GRADER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
     )
 
-    raw = response.text.strip()
-    grade = None
-    explanation = ""
+    raw = response.output_text.strip()
 
-    for line in raw.splitlines():
-        line = line.strip()
-        if line.upper().startswith("GRADE:"):
-            try:
-                grade = float(line.split(":", 1)[1].strip())
-                grade = max(0.0, min(1.0, grade))   # clamp to [0, 1]
-            except ValueError:
-                # Try to extract any float in the line
-                match = re.search(r"\d+\.?\d*", line)
-                if match:
-                    grade = float(match.group())
-                    grade = max(0.0, min(1.0, grade))
-        elif line.upper().startswith("EXPLANATION:"):
-            explanation = line.split(":", 1)[1].strip()
-
-    if grade is None:
-        grade = 0.0
-        explanation = "Grader could not parse a valid grade. Defaulting to 0."
-
-    return {
-        "grade": grade,
-        "explanation": explanation,
+    grades = {
+        "task1_grade": 0.0,
+        "task1_explanation": "",
+        "task2_grade": 0.0,
+        "task2_explanation": "",
+        "task3_grade": 0.0,
+        "task3_explanation": "",
         "raw": raw,
     }
 
+    for line in [l.strip() for l in raw.splitlines() if l.strip()]:
+        upper = line.upper()
+
+        if upper.startswith("TASK1_GRADE:"):
+            grades["task1_grade"] = _safe_float(line.split(":", 1)[1])
+
+        elif upper.startswith("TASK1_EXPLANATION:"):
+            grades["task1_explanation"] = line.split(":", 1)[1].strip()
+
+        elif upper.startswith("TASK2_GRADE:"):
+            grades["task2_grade"] = _safe_float(line.split(":", 1)[1])
+
+        elif upper.startswith("TASK2_EXPLANATION:"):
+            grades["task2_explanation"] = line.split(":", 1)[1].strip()
+
+        elif upper.startswith("TASK3_GRADE:"):
+            grades["task3_grade"] = _safe_float(line.split(":", 1)[1])
+
+        elif upper.startswith("TASK3_EXPLANATION:"):
+            grades["task3_explanation"] = line.split(":", 1)[1].strip()
+
+    grades["overall_grade"] = round(
+        WEIGHTS["task1"] * grades["task1_grade"]
+        + WEIGHTS["task2"] * grades["task2_grade"]
+        + WEIGHTS["task3"] * grades["task3_grade"],
+        2,
+    )
+
+    return grades
+
 
 def grade_label(grade: float) -> str:
-    """Returns a human-readable label for a numeric grade."""
-    if grade >= 0.9:
+    """Returns a human-readable performance label."""
+    if grade >= 0.90:
         return "Excellent"
-    elif grade >= 0.7:
+    elif grade >= 0.70:
         return "Good"
-    elif grade >= 0.4:
+    elif grade >= 0.50:
         return "Partial"
-    elif grade >= 0.1:
+    elif grade >= 0.20:
         return "Poor"
     else:
         return "Fail"
@@ -122,12 +146,13 @@ def grade_label(grade: float) -> str:
 
 # --- Optional: Local Testing ---
 if __name__ == "__main__":
-    email = "CONGRATULATIONS! You've won a $1000 gift card! Click here now."
-    verdict = "spam"
-    reasoning = (
-        "The email uses all-caps congratulations, claims a prize, "
-        "and contains an urgent call-to-action link — classic spam signals."
-    )
-    result = grade_response(email, verdict, reasoning)
-    print(f"Grade      : {result['grade']} ({grade_label(result['grade'])})")
-    print(f"Explanation: {result['explanation']}")
+    from agent.geminiai_agent import get_email_analysis
+
+    email = "Hi team, please review the Q3 report and approve by EOD Friday. Urgent."
+    agent_result = get_email_analysis(email)
+    grade_result = grade_response(email, agent_result)
+
+    print(f"Task 1  : {grade_result['task1_grade']:.2f}  — {grade_result['task1_explanation']}")
+    print(f"Task 2  : {grade_result['task2_grade']:.2f}  — {grade_result['task2_explanation']}")
+    print(f"Task 3  : {grade_result['task3_grade']:.2f}  — {grade_result['task3_explanation']}")
+    print(f"Overall : {grade_result['overall_grade']:.2f}  [{grade_label(grade_result['overall_grade'])}]")

@@ -1,4 +1,4 @@
-from agent.geminiai_agent import get_action
+from agent.geminiai_agent import get_email_analysis
 
 def run_interactive():
     print("Welcome to the AI Email Classifier!\n")
@@ -12,7 +12,7 @@ def run_interactive():
             break
 
         print("Thinking...")
-        action = get_action(user_email)
+        action = get_email_analysis(user_email)
 
         print(f"AI Classification: {action}")
 
