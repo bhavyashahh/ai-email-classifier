@@ -1,0 +1,60 @@
+name: ai-email-classifier
+description: >
+  OpenEnv environment simulating real-world email triage.
+  An AI agent classifies emails by spam status, category, and priority.
+  Three tasks of increasing difficulty from simple spam detection to
+  nuanced multi-label classification of ambiguous emails.
+version: 1.0.0
+tags:
+  - openenv
+  - email
+  - classification
+  - nlp
+
+action_space:
+  type: object
+  properties:
+    spam_status:
+      type: string
+      enum: [spam, not_spam]
+    category:
+      type: string
+      enum: [work, personal, promotions, updates, finance]
+    priority:
+      type: string
+      enum: [high, medium, low]
+
+observation_space:
+  type: object
+  properties:
+    email_id:
+      type: integer
+    email_content:
+      type: string
+    instructions:
+      type: string
+    required_fields:
+      type: array
+      items:
+        type: string
+
+reward_range: [0.0, 1.0]
+
+tasks:
+  - id: task_1_easy
+    name: Spam Detection
+    difficulty: easy
+    description: Classify 5 obvious emails as spam or not_spam.
+    num_steps: 5
+
+  - id: task_2_medium
+    name: Spam + Category Classification
+    difficulty: medium
+    description: Classify 5 emails by spam status and category.
+    num_steps: 5
+
+  - id: task_3_hard
+    name: Full Email Triage
+    difficulty: hard
+    description: Classify 5 ambiguous emails by spam status, category, and priority.
+    num_steps: 5

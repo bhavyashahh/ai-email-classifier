@@ -1,44 +1,52 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel
-from env.environment import EmailEnv
+from env.environment import EmailClassifierEnv
+from grader.grader import grade_task
 
-# 1. Initialize the FastAPI web server
-app = FastAPI()
+app = FastAPI(title="AI Email Classifier - OpenEnv")
+env = EmailClassifierEnv()
 
-# 2. Initialize your specific environment globally so it remembers the state
-env = EmailEnv()
 
-# 3. Define what the incoming action data will look like
 class ActionRequest(BaseModel):
-    action: str
+    action: dict
 
-# --- API ROUTES ---
+
+class ResetRequest(BaseModel):
+    task_id: str = "task_1_easy"
+
 
 @app.get("/")
-def read_root():
-    """Health check route so you know the server is running."""
-    return {"status": "running", "message": "AI Email Classifier API is live!"}
+def health():
+    return {"status": "running", "env": "ai-email-classifier"}
 
-@app.get("/reset")
-def reset_environment():
-    """
-    The validator calls this to start the test.
-    It triggers your env.reset() and returns the first email.
-    """
-    state = env.reset()
-    return {"state": state}
+
+@app.post("/reset")
+def reset(req: ResetRequest = ResetRequest()):
+    obs = env.reset(req.task_id)
+    return {"observation": obs.model_dump()}
+
 
 @app.post("/step")
-def step_environment(req: ActionRequest):
-    """
-    The validator calls this to submit the AI's action.
-    It triggers your env.step() and returns the reward and next email.
-    """
-    next_state, reward, done, info = env.step(req.action)
-    
+def step(req: ActionRequest):
+    obs, reward, done, info = env.step(req.action)
     return {
-        "state": next_state,
-        "reward": reward,
+        "observation": obs.model_dump() if obs else None,
+        "reward": reward.model_dump(),
         "done": done,
-        "info": info
+        "info": info,
     }
+
+
+@app.get("/state")
+def state():
+    return env.state().model_dump()
+
+
+@app.get("/tasks")
+def list_tasks():
+    return {"tasks": env.get_task_ids()}
+
+
+@app.post("/grade")
+def grade(task_id: str = Query(...), actions: list[dict] = []):
+    return grade_task(task_id, actions)

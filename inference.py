@@ -1,93 +1,144 @@
 """
-main.py
--------
-Interactive email analysis system with a 3-task grader.
+inference.py — Baseline inference script for AI Email Classifier OpenEnv.
 
-Workflow per iteration:
-  1. User types email content.
-  2. AI agent returns: spam verdict, category, priority — each with justification.
-  3. Grader evaluates all three tasks and returns per-task grades + weighted overall.
-  4. A clean terminal report is printed.
+Uses OpenAI-compatible client to run an LLM against the environment.
+Emits structured [START], [STEP], [END] logs.
+
+Required env vars:
+  API_BASE_URL  - LLM API endpoint
+  MODEL_NAME    - Model identifier
+  HF_TOKEN      - API key
 """
 
-from agent.geminiai_agent import get_email_analysis
-from grader.grader import grade_response, grade_label
+import os
+import sys
+import json
+import time
+import requests
+from openai import OpenAI
 
-SEP  = "─" * 62
-SEP2 = "· · " * 15
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-flash")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-def bar(grade: float, width: int = 20) -> str:
-    """Renders a simple ASCII progress bar for a grade."""
-    filled = round(grade * width)
-    return "[" + "█" * filled + "░" * (width - filled) + f"]  {grade:.2f}"
-
-
-def print_report(email: str, agent: dict, grade: dict) -> None:
-    overall = grade["overall_grade"]
-    label   = grade_label(overall)
-
-    print(f"\n{SEP}")
-    print("  AI ANALYSIS REPORT")
-    print(SEP)
-
-    # Task 1
-    print(f"  Task 1 — Spam status   : {agent['spam_status']}")
-    print(f"  Justification          : {agent['spam_justification']}")
-    print(f"  Grade                  : {bar(grade['task1_grade'])}  (weight 50%)")
-    print(f"  Grader note            : {grade['task1_explanation']}")
-    print()
-
-    # Task 2
-    print(f"  Task 2 — Category      : {agent['category']}")
-    print(f"  Justification          : {agent['category_justification']}")
-    print(f"  Grade                  : {bar(grade['task2_grade'])}  (weight 30%)")
-    print(f"  Grader note            : {grade['task2_explanation']}")
-    print()
-
-    # Task 3
-    print(f"  Task 3 — Priority      : {agent['priority']}")
-    print(f"  Justification          : {agent['priority_justification']}")
-    print(f"  Grade                  : {bar(grade['task3_grade'])}  (weight 20%)")
-    print(f"  Grader note            : {grade['task3_explanation']}")
-
-    # Overall
-    print(f"\n{SEP}")
-    print(f"  OVERALL GRADE          : {bar(overall, 30)}  [{label}]")
-    print(f"  Formula                : 0.50×T1 + 0.30×T2 + 0.20×T3")
-    print(SEP)
+TASKS = ["task_1_easy", "task_2_medium", "task_3_hard"]
 
 
-def run_interactive() -> None:
-    print("\nWelcome to the AI Email Analyser with Grader!")
-    print("Type 'exit' or 'quit' to stop.\n")
+def call_llm(email_content: str, instructions: str, required_fields: list[str]) -> dict:
+    fields_str = ", ".join(required_fields)
+    system_prompt = f"""You are an email classification agent. {instructions}
 
-    while True:
-        print(SEP)
-        raw_input = input("Paste email content:\n> ").strip()
+You must respond with ONLY a valid JSON object containing these fields: {fields_str}
 
-        if not raw_input:
-            print("  (empty — please type something)\n")
-            continue
+Valid values:
+- spam_status: "spam" or "not_spam"
+- category: "work", "personal", "promotions", "updates", or "finance"
+- priority: "high", "medium", or "low"
 
-        if raw_input.lower() in {"exit", "quit"}:
-            print("\nGoodbye!")
-            break
+Respond with ONLY the JSON object, no other text."""
 
-        # ── Agent ──────────────────────────────────────────────────────
-        print("\n[Agent analysing...] ", end="", flush=True)
-        agent_result = get_email_analysis(raw_input)
-        print("done.")
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Classify this email:\n\n{email_content}"},
+        ],
+        temperature=0.0,
+    )
 
-        # ── Grader ─────────────────────────────────────────────────────
-        print("[Grader evaluating...] ", end="", flush=True)
-        grade_result = grade_response(raw_input, agent_result)
-        print("done.")
+    text = response.choices[0].message.content.strip()
+    text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
-        # ── Report ─────────────────────────────────────────────────────
-        print_report(raw_input, agent_result, grade_result)
-        print()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        result = {}
+        for field in required_fields:
+            result[field] = ""
+        return result
+
+
+def run_task(task_id: str) -> dict:
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f'[START] {{"task_id": "{task_id}", "timestamp": "{ts}"}}', flush=True)
+
+    resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
+    resp.raise_for_status()
+    data = resp.json()
+    obs = data["observation"]
+
+    total_reward = 0.0
+    step_count = 0
+    actions = []
+    done = False
+
+    while not done:
+        action = call_llm(obs["email_content"], obs["instructions"], obs["required_fields"])
+        actions.append(action)
+
+        resp = requests.post(f"{ENV_URL}/step", json={"action": action})
+        resp.raise_for_status()
+        result = resp.json()
+
+        reward = result["reward"]["total"]
+        done = result["done"]
+        total_reward += reward
+
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        step_log = {
+            "task_id": task_id,
+            "step": step_count,
+            "action": action,
+            "reward": reward,
+            "done": done,
+            "timestamp": ts,
+        }
+        print(f"[STEP] {json.dumps(step_log)}", flush=True)
+
+        step_count += 1
+        if not done:
+            obs = result["observation"]
+
+    avg_reward = round(total_reward / step_count, 3) if step_count > 0 else 0.0
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    end_log = {
+        "task_id": task_id,
+        "total_reward": round(total_reward, 3),
+        "steps": step_count,
+        "avg_reward": avg_reward,
+        "timestamp": ts,
+    }
+    print(f"[END] {json.dumps(end_log)}", flush=True)
+
+    return end_log
+
+
+def main():
+    if not HF_TOKEN:
+        print("ERROR: HF_TOKEN env var not set", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Environment: {ENV_URL}", flush=True)
+    print(f"Model: {MODEL_NAME}", flush=True)
+    print(f"API: {API_BASE_URL}", flush=True)
+    print("", flush=True)
+
+    results = {}
+    for task_id in TASKS:
+        result = run_task(task_id)
+        results[task_id] = result
+        print("", flush=True)
+
+    print("=" * 50, flush=True)
+    print("BASELINE RESULTS SUMMARY", flush=True)
+    print("=" * 50, flush=True)
+    for task_id, r in results.items():
+        print(f"  {task_id}: avg_reward={r['avg_reward']}, steps={r['steps']}", flush=True)
+    print("=" * 50, flush=True)
 
 
 if __name__ == "__main__":
-    run_interactive()
+    main()
