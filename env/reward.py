@@ -17,8 +17,8 @@ def compute_reward(action: dict, ground_truth: dict, required_fields: list[str])
     feedback_parts = []
 
     for field in required_fields:
-        expected = ground_truth.get(field, "").lower().strip()
-        actual = action.get(field, "").lower().strip()
+        expected = _normalize(field, ground_truth.get(field, ""))
+        actual = _normalize(field, action.get(field, ""))
 
         if actual == expected:
             score = 1.0
@@ -36,6 +36,23 @@ def compute_reward(action: dict, ground_truth: dict, required_fields: list[str])
 
     total = round(max(0.0, min(1.0, total)), 3)
     return Reward(total=total, breakdown=breakdown, feedback="; ".join(feedback_parts))
+
+
+def _normalize(field: str, value: str) -> str:
+    """Normalize agent output to match ground truth format."""
+    v = value.lower().strip().strip('"').strip("'")
+    if field == "spam_status":
+        if v in ("spam", "yes", "true"):
+            return "spam"
+        if v in ("not spam", "not_spam", "no", "false", "ham", "legitimate"):
+            return "not_spam"
+    if field == "category":
+        v = v.replace(" ", "")
+        aliases = {"promotion": "promotions", "update": "updates", "financial": "finance"}
+        return aliases.get(v, v)
+    if field == "priority":
+        v = v.replace(" ", "")
+    return v
 
 
 def _is_partial_match(field: str, actual: str, expected: str) -> bool:
