@@ -2,7 +2,7 @@
 inference.py — Baseline inference script for AI Email Classifier OpenEnv.
 
 Uses OpenAI-compatible client to run an LLM against the environment.
-Emits structured [START], [STEP], [END] logs.
+Emits structured [START], [STEP], [END] logs per the mandatory format.
 
 Required env vars:
   API_BASE_URL  - LLM API endpoint
@@ -15,17 +15,39 @@ import sys
 import json
 import time
 import requests
+from typing import List, Optional
 from openai import OpenAI, RateLimitError
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-flash")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
-
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+API_BASE_URL = os.getenv("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+BENCHMARK = "ai-email-classifier"
 
 TASKS = ["task_1_easy", "task_2_medium", "task_3_hard"]
 
+
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
+
+# ── Logging helpers (mandatory format) ──────────────────────────────
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    done_val = str(done).lower()
+    error_val = error if error else "null"
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+
+
+# ── LLM call ────────────────────────────────────────────────────────
 
 def call_llm(email_content: str, instructions: str, required_fields: list[str]) -> dict:
     fields_str = ", ".join(required_fields)
@@ -55,101 +77,87 @@ Respond with ONLY the JSON object, no other text."""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        result = {}
-        for field in required_fields:
-            result[field] = ""
-        return result
+        return {f: "" for f in required_fields}
 
 
 def call_llm_with_retry(email_content: str, instructions: str, required_fields: list[str], max_retries: int = 3) -> dict:
     for attempt in range(max_retries):
         try:
             return call_llm(email_content, instructions, required_fields)
-        except RateLimitError as e:
+        except RateLimitError:
             wait = 40 if attempt == 0 else 60 * (attempt + 1)
             print(f"  Rate limited, waiting {wait}s (attempt {attempt + 1}/{max_retries})...", flush=True)
             time.sleep(wait)
     return {f: "" for f in required_fields}
 
 
+# ── Run one task ────────────────────────────────────────────────────
+
 def run_task(task_id: str) -> dict:
-    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    print(f'[START] {{"task_id": "{task_id}", "timestamp": "{ts}"}}', flush=True)
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
     resp.raise_for_status()
-    data = resp.json()
-    obs = data["observation"]
+    obs = resp.json()["observation"]
 
-    total_reward = 0.0
-    step_count = 0
-    actions = []
+    rewards: List[float] = []
+    steps_taken = 0
     done = False
+    last_error = None
 
-    while not done:
-        if step_count > 0:
-            time.sleep(13)
-        action = call_llm_with_retry(obs["email_content"], obs["instructions"], obs["required_fields"])
-        actions.append(action)
+    try:
+        while not done:
+            if steps_taken > 0:
+                time.sleep(13)
 
-        resp = requests.post(f"{ENV_URL}/step", json={"action": action})
-        resp.raise_for_status()
-        result = resp.json()
+            action = call_llm_with_retry(obs["email_content"], obs["instructions"], obs["required_fields"])
+            action_str = json.dumps(action, separators=(",", ":"))
 
-        reward = result["reward"]["total"]
-        done = result["done"]
-        total_reward += reward
+            resp = requests.post(f"{ENV_URL}/step", json={"action": action})
+            resp.raise_for_status()
+            result = resp.json()
 
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        step_log = {
-            "task_id": task_id,
-            "step": step_count,
-            "action": action,
-            "reward": reward,
-            "done": done,
-            "timestamp": ts,
-        }
-        print(f"[STEP] {json.dumps(step_log)}", flush=True)
+            reward = result["reward"]["total"]
+            done = result["done"]
+            rewards.append(reward)
+            steps_taken += 1
 
-        step_count += 1
-        if not done:
-            obs = result["observation"]
+            log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
 
-    avg_reward = round(total_reward / step_count, 3) if step_count > 0 else 0.0
-    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    end_log = {
-        "task_id": task_id,
-        "total_reward": round(total_reward, 3),
-        "steps": step_count,
-        "avg_reward": avg_reward,
-        "timestamp": ts,
-    }
-    print(f"[END] {json.dumps(end_log)}", flush=True)
+            if not done:
+                obs = result["observation"]
 
-    return end_log
+    except Exception as exc:
+        last_error = str(exc)
+        print(f"[DEBUG] Error during task {task_id}: {last_error}", flush=True)
 
+    score = sum(rewards) / len(rewards) if rewards else 0.0
+    score = min(max(score, 0.0), 1.0)
+    success = score >= 0.5
+
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return {"task_id": task_id, "score": score, "steps": steps_taken, "success": success}
+
+
+# ── Main ────────────────────────────────────────────────────────────
 
 def main():
     if not HF_TOKEN:
         print("ERROR: HF_TOKEN env var not set", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Environment: {ENV_URL}", flush=True)
-    print(f"Model: {MODEL_NAME}", flush=True)
-    print(f"API: {API_BASE_URL}", flush=True)
-    print("", flush=True)
-
     results = {}
     for task_id in TASKS:
         result = run_task(task_id)
         results[task_id] = result
-        print("", flush=True)
 
+    print("", flush=True)
     print("=" * 50, flush=True)
     print("BASELINE RESULTS SUMMARY", flush=True)
     print("=" * 50, flush=True)
     for task_id, r in results.items():
-        print(f"  {task_id}: avg_reward={r['avg_reward']}, steps={r['steps']}", flush=True)
+        print(f"  {task_id}: score={r['score']:.2f}, steps={r['steps']}, success={r['success']}", flush=True)
     print("=" * 50, flush=True)
 
 

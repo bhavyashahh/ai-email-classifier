@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel
+from typing import Optional
 from env.environment import EmailClassifierEnv
 from grader.grader import grade_task
 
@@ -12,7 +13,7 @@ class ActionRequest(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    task_id: str = "task_1_easy"
+    task_id: Optional[str] = "task_1_easy"
 
 
 @app.get("/")
@@ -21,8 +22,11 @@ def health():
 
 
 @app.post("/reset")
-def reset(req: ResetRequest = ResetRequest()):
-    obs = env.reset(req.task_id)
+async def reset(request: Request):
+    """Handles both empty body {} and {"task_id": "..."} """
+    body = await request.json() if await request.body() else {}
+    task_id = body.get("task_id", "task_1_easy")
+    obs = env.reset(task_id)
     return {"observation": obs.model_dump()}
 
 
