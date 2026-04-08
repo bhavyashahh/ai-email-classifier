@@ -15,7 +15,7 @@ import sys
 import json
 import time
 import requests
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-flash")
@@ -61,6 +61,17 @@ Respond with ONLY the JSON object, no other text."""
         return result
 
 
+def call_llm_with_retry(email_content: str, instructions: str, required_fields: list[str], max_retries: int = 3) -> dict:
+    for attempt in range(max_retries):
+        try:
+            return call_llm(email_content, instructions, required_fields)
+        except RateLimitError as e:
+            wait = 40 if attempt == 0 else 60 * (attempt + 1)
+            print(f"  Rate limited, waiting {wait}s (attempt {attempt + 1}/{max_retries})...", flush=True)
+            time.sleep(wait)
+    return {f: "" for f in required_fields}
+
+
 def run_task(task_id: str) -> dict:
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(f'[START] {{"task_id": "{task_id}", "timestamp": "{ts}"}}', flush=True)
@@ -77,8 +88,8 @@ def run_task(task_id: str) -> dict:
 
     while not done:
         if step_count > 0:
-            time.sleep(2)
-        action = call_llm(obs["email_content"], obs["instructions"], obs["required_fields"])
+            time.sleep(13)
+        action = call_llm_with_retry(obs["email_content"], obs["instructions"], obs["required_fields"])
         actions.append(action)
 
         resp = requests.post(f"{ENV_URL}/step", json={"action": action})
