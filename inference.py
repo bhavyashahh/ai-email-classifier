@@ -76,6 +76,8 @@ def run_task(task_id: str) -> dict:
     done = False
 
     while not done:
+        if step_count > 0:
+            time.sleep(2)
         action = call_llm(obs["email_content"], obs["instructions"], obs["required_fields"])
         actions.append(action)
 
